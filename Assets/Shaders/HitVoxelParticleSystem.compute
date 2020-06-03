@@ -1,0 +1,87 @@
+﻿#pragma kernel Setup
+#pragma kernel Update
+
+#define THREAD [numthreads(8, 1, 1)]
+#define DISCARD_OVERFLOW if (id.x >= _ParticleCount) return;
+
+#include "Random.cginc"
+#include "Quaternion.cginc"
+#include "Noise/SimplexNoiseGrad3D.cginc"
+#include "VParticle.cginc"
+
+RWStructuredBuffer<VParticle> _ParticleBuffer;
+uint _ParticleCount;
+StructuredBuffer<float3> _NormalBuffer;
+
+float _DT;
+float3 _InitPosition;
+float2 _UnitLength;
+float2 _ForceDelta;
+float _ForceLength;
+float2 _Spin;
+float2 _Life;
+float _Gravity;
+
+
+// Deterministic random rotation axis.
+float3 RotationAxis(float2 uv)
+{
+	// Uniformaly distributed points
+	// http://mathworld.wolfram.com/SpherePointPicking.html
+	float u = nrand(uv, 10) * 2 - 1;
+	float u2 = sqrt(1 - u * u);
+	float sn, cs;
+	sincos(nrand(uv, 11) * PI * 2, sn, cs);
+	return float3(u2 * cs, u2 * sn, u);
+}
+
+VParticle UpdateRotation(VParticle particle, uint2 id)
+{
+	float4 r = particle.rotation;
+	float3 v = particle.velocity;
+
+	// Calculate the angular velocity.
+	float delta = min(_Spin.x, length(v.xyz) * _Spin.y);
+	delta *= 1 - nrand(id, 18) * 0.5;
+
+	// Convert it to a quaternion.
+	float sn, cs;
+	sincos(delta, sn, cs);
+	float4 dq = float4(RotationAxis(id) * sn, cs);
+
+	// Apply the quaternion and normalize it.
+	particle.rotation = normalize(qmul(dq, r));
+
+	return particle;
+}
+
+THREAD
+void Setup (uint3 id : SV_DispatchThreadID)
+{
+    DISCARD_OVERFLOW
+
+	float len = nrand(_UnitLength);
+	float3 dir = _NormalBuffer[id.x];
+	float force = nrand(_ForceDelta, id.x) * _ForceLength;
+
+    VParticle particle;
+    particle.position = _InitPosition;
+    particle.size = float3(len, len, len);
+    particle.rotation = QUATERNION_IDENTITY;
+    particle.velocity = dir * force;
+	particle.speed = 0;
+    _ParticleBuffer[id.x] = particle;
+}
+
+THREAD
+void Update (uint3 id : SV_DispatchThreadID)
+{
+    DISCARD_OVERFLOW
+
+    VParticle particle = _ParticleBuffer[id.x];
+	particle.velocity.y -= _Gravity;
+	particle.position += _DT * particle.velocity;
+	particle = UpdateRotation(particle, id.xy);
+
+    _ParticleBuffer[id.x] = particle;
+}
